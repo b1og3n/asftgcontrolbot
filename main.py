@@ -14,10 +14,7 @@ ASF_URL = os.getenv("ASF_URL")
 ASF_PASSWORD = os.getenv("ASF_PASSWORD")
 
 PAGE_SIZE = 40
-GAMES = {
-    730: "CS2",
-    440: "TF2",
-    570: "Dota 2"}
+GAMES = {730: "CS2", 440: "TF2", 570: "Dota 2"}
 appid = 753
 contextid = 6
 console_users, redeem_users = set(), set()
@@ -137,8 +134,6 @@ def format_bot_ui(bot: dict) -> str:
     currency = get_currency_name(bot.get("WalletCurrency", 0))
     redeem = bot.get("GamesToRedeemInBackgroundCount", 0)
     steam_id = bot.get("SteamID")
-    steam_level = bot.get("SteamLevel")
-    games_count = bot.get("GamesOwned")
     nickname = html.escape(str(bot.get("Nickname") or ""))
     profile_url = f"https://steamcommunity.com/profiles/{steam_id}"
     text = (
@@ -208,8 +203,7 @@ def main_keyboard():
         [InlineKeyboardButton(text="🔑 Активация ключей на всех аккаунтах", callback_data="redeem_keys")],
         [InlineKeyboardButton(text="📁 Плагины", callback_data="plugins")],
         [InlineKeyboardButton(text="💻 Консоль", callback_data="console")],
-        [InlineKeyboardButton(text="♻ Перезапустить ASF", callback_data="restart_asf_confirm")],
-    ])
+        [InlineKeyboardButton(text="♻ Перезапустить ASF", callback_data="restart_asf_confirm")]])
 
 def back_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="back")]])
@@ -242,7 +236,6 @@ def is_bot_playing(bot_name: str) -> bool:
         return False
     data = response.json()
     bot = data.get("Result", {}).get(bot_name, {})
-    # правильный способ
     return bool(bot.get("PlayingBlocked", False)) or bool(bot.get("CurrentGamesPlayed", []))
 
 def is_idle_enabled(bot_name: str, app_id: int) -> bool:
@@ -464,10 +457,7 @@ async def bots_handler(callback: CallbackQuery):
     await stop_twofa_task(callback.message.message_id) # type: ignore
     await callback.answer()
     try:
-        response = requests.get(
-            "http://127.0.0.1:1242/Api/Bot/ASF",
-            headers={"Authentication": ASF_PASSWORD}
-        )
+        response = requests.get("http://127.0.0.1:1242/Api/Bot/ASF", headers={"Authentication": ASF_PASSWORD})
         if response.status_code != 200:
             await callback.message.edit_text("Ошибка API") # type: ignore
             return
@@ -582,7 +572,6 @@ async def twofa_handler(callback: CallbackQuery):
         return
     bot_name = callback.data.replace("2fa_", "")
     message_id = callback.message.message_id # type: ignore
-    # убиваем старую task
     old_task = twofa_tasks.pop(message_id, None)
     if old_task:
         old_task.cancel()
@@ -590,11 +579,9 @@ async def twofa_handler(callback: CallbackQuery):
             await old_task
         except:
             pass
-    # мгновенный экран загрузки
     await callback.message.edit_text( # type: ignore
         f"🔐 {bot_name}\n\nЗагрузка 2FA...",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data=f"bot_{bot_name}")]]))
-    # запускаем updater
     task = asyncio.create_task(auto_update_2fa(callback.message, bot_name))
     twofa_tasks[message_id] = task
 
@@ -608,7 +595,6 @@ async def confirm_trades(callback: CallbackQuery):
             await callback.answer("Ошибка HTTP", show_alert=True)
             return
         await callback.answer("Подтверждено", show_alert=True)
-        # обновляем экран
         await twofa_handler(callback)
     except Exception as e:
         await callback.message.edit_text(f"Ошибка: {e}") # type: ignore
@@ -655,8 +641,7 @@ async def confirm_list(callback: CallbackQuery):
             for conf in confirmations:
                 text += (
                     f"- {conf['type_name']}\n"
-                    f"ID: <code>{conf['id']}</code>\n\n"
-                )
+                    f"ID: <code>{conf['id']}</code>\n\n")
         await callback.message.edit_text(text, # type: ignore
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="Подтвердить всё", callback_data=f"confirm_all_{bot_name}")],
@@ -685,8 +670,7 @@ async def confirm_all(callback: CallbackQuery):
             for conf in confirmations:
                 text += (
                     f"- {conf['type_name']}\n"
-                    f"ID: <code>{conf['id']}</code>\n\n"
-                )
+                    f"ID: <code>{conf['id']}</code>\n\n")
         await callback.message.edit_text( # type: ignore
             text,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -710,14 +694,12 @@ async def farm_game(callback: CallbackQuery):
         bot_data = data.get("Result", {}).get(bot_name, {})
         config = bot_data.get("BotConfig", {})
         idle_games = config.get("GamesPlayedWhileIdle", [])
-        # переключение
         if app_id in idle_games:
             idle_games.remove(app_id)
             action = "Idle выключен"
         else:
             idle_games.append(app_id)
             action = "Idle включен"
-        # обновляем конфиг
         config["GamesPlayedWhileIdle"] = idle_games
         save = requests.post(
             f"http://127.0.0.1:1242/Api/Bot/{bot_name}", headers={"Authentication": ASF_PASSWORD}, json={"BotConfig": config})
@@ -921,7 +903,6 @@ async def text_router(message: Message):
             text = text[:4000] + "\n\n...обрезано"
         await checking.edit_text(text)
         return
-    # redeem mode
     if message.from_user.id in redeem_users: # type: ignore
         redeem_users.discard(message.from_user.id) # type: ignore
         menu_message = redeem_messages.pop(message.from_user.id, None) # type: ignore
