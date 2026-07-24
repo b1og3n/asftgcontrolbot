@@ -12,6 +12,7 @@ API_TOKEN = os.getenv("API_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID")) # type: ignore
 ASF_URL = os.getenv("ASF_URL")
 ASF_PASSWORD = os.getenv("ASF_PASSWORD")
+HEADERS = {"Authentication": ASF_PASSWORD}
 
 PAGE_SIZE = 40
 GAMES = {730: "CS2", 440: "TF2", 570: "Dota 2"}
@@ -30,9 +31,27 @@ class AdminFilter(BaseFilter):
 class AdminCallbackFilter(BaseFilter):
     async def __call__(self, callback: CallbackQuery) -> bool:
         return callback.from_user.id == ADMIN_ID
-    
+
 def asf_get(path: str):
-    return requests.get(f"http://127.0.0.1:1242{path}", headers={"Authentication": ASF_PASSWORD})
+    return requests.get(f"http://127.0.0.1:1242{path}", headers=HEADERS)
+
+def asf_json(path: str):
+    response = asf_get(path)
+    if response.status_code != 200:
+        return None
+    data = response.json()
+    if not data.get("Success"):
+        return None
+    return data["Result"]
+
+def asf_post(path: str, payload: dict):
+    response = requests.post(f"http://127.0.0.1:1242{path}", headers=HEADERS, json=payload)
+    if response.status_code != 200:
+        return None
+    data = response.json()
+    if not data.get("Success"):
+        return None
+    return data.get("Result")
 
 def get_currency_name(currency_id: int) -> str:
     if currency_id == 1:
@@ -103,7 +122,15 @@ def get_uptime(start_time_str: str) -> str:
     days = delta.days
     hours, remainder = divmod(delta.seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
-    return f"{days}д {hours}ч {minutes}м {seconds}с"
+    parts = []
+    if days:
+        parts.append(f"{days}д")
+    if hours:
+        parts.append(f"{hours}ч")
+    if minutes:
+        parts.append(f"{minutes}м")
+    parts.append(f"{seconds}с")
+    return " ".join(parts)
 
 def get_bot_status_icon(bot: dict) -> str:
     online = bot.get("IsConnectedAndLoggedOn", False)
@@ -145,7 +172,7 @@ def format_bot_ui(bot: dict) -> str:
     if idle_games:
         names = [GAMES.get(g, str(g)) for g in idle_games]
         if bot.get("IsConnectedAndLoggedOn"):
-            idle_text = f"⌚ Накрутка часов: включена ({', '.join(names)})"
+            idle_text = f"⌚ Накрутка часов: {', '.join(names)}"
         else:
             idle_text = f"⌚ Накрутка часов: включена ({', '.join(names)}) применится после запуска"
         text += f"{idle_text}\n"
@@ -153,7 +180,7 @@ def format_bot_ui(bot: dict) -> str:
         text += "⌚ Накрутка часов: выключена\n"
     text += (
         f"🆔 : <code>{steam_id}</code>\n"
-        f"🔐 2FA: {twofa}\n\n"
+        f"🔐 Steam Guard: {twofa}\n\n"
         f"💰 Баланс: {balance:.2f} {currency}\n")
     if redeem > 0:
         text += f"\nКлючей в очереди: {redeem}\n"
@@ -164,7 +191,7 @@ def format_bot_ui(bot: dict) -> str:
     return text
 
 def get_asf_status_text():
-    response = requests.get(ASF_URL, headers={"Authentication": ASF_PASSWORD}) # type: ignore
+    response = requests.get(ASF_URL, headers=HEADERS) # type: ignore
     if response.status_code != 200:
         return f"Ошибка API: {response.status_code}"
     data = response.json()
@@ -200,22 +227,10 @@ def main_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🆙 Обновить", callback_data="refresh")],
         [InlineKeyboardButton(text="🤖 Боты", callback_data="bots")],
-        [InlineKeyboardButton(text="🔑 Активация ключей на всех аккаунтах", callback_data="redeem_keys")],
-        [InlineKeyboardButton(text="📁 Плагины", callback_data="plugins")],
-        [InlineKeyboardButton(text="💻 Консоль", callback_data="console")],
-        [InlineKeyboardButton(text="♻ Перезапустить ASF", callback_data="restart_asf_confirm")]])
+        [InlineKeyboardButton(text="⚙️ Управление ASF", callback_data="asf_management")]])
 
-def back_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="back")]])
-
-def games_keyboard(bot_name, is_enabled):
-    if is_enabled:
-        text = "Остановить накрутку CS2"
-    else:
-        text = "⌚ Накрутить часы CS2"
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=text, callback_data=f"farm|{bot_name}|730")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data=f"bot_{bot_name}")]])
+def back_keyboard(callback_data: str = "back"):
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data=callback_data)]])
 
 def bots_keyboard(bots: dict):
     keyboard = []
@@ -227,8 +242,35 @@ def bots_keyboard(bots: dict):
         else:
             callback_data = f"bot_{name}"
         keyboard.append([InlineKeyboardButton(text=f"{status} {name}", callback_data=callback_data)])
+    keyboard.append([InlineKeyboardButton(text="🔑 Активация ключей на всех аккаунтах", callback_data="redeem_keys")])
     keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+def bot_keyboard(bot_name: str, has_2fa: bool):
+    keyboard = []
+    if has_2fa:
+        keyboard.append([InlineKeyboardButton(text="🔐 Steam Guard",callback_data=f"2fa_{bot_name}")])
+    keyboard.append([InlineKeyboardButton(text="⌚ Накрутка часов", callback_data=f"games_{bot_name}")])
+    keyboard.append([InlineKeyboardButton(text="🔑 Активировать ключ", callback_data=f"redeem_bot_{bot_name}")])
+    keyboard.append([InlineKeyboardButton(text="📦 Инвентарь", callback_data=f"inventory_{bot_name}")])
+    keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="bots")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+def games_keyboard(bot_name, is_enabled):
+    if is_enabled:
+        text = "🔴 Остановить накрутку CS2"
+    else:
+        text = "⌚ Накрутить часы CS2"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=text, callback_data=f"farm|{bot_name}|730")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data=f"bot_{bot_name}")]])
+
+def asf_management_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📁 Плагины", callback_data="plugins")],
+        [InlineKeyboardButton(text="💻 Консоль", callback_data="console")],
+        [InlineKeyboardButton(text="♻ Перезапустить ASF", callback_data="restart_asf_confirm")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back")],])
 
 def is_bot_playing(bot_name: str) -> bool:
     response = asf_get("/Api/Bot/ASF")
@@ -239,7 +281,7 @@ def is_bot_playing(bot_name: str) -> bool:
     return bool(bot.get("PlayingBlocked", False)) or bool(bot.get("CurrentGamesPlayed", []))
 
 def is_idle_enabled(bot_name: str, app_id: int) -> bool:
-    response = requests.get(f"http://127.0.0.1:1242/Api/Bot/{bot_name}", headers={"Authentication": ASF_PASSWORD})
+    response = requests.get(f"http://127.0.0.1:1242/Api/Bot/{bot_name}", headers=HEADERS)
     if response.status_code != 200:
         return False
     data = response.json()
@@ -249,7 +291,7 @@ def is_idle_enabled(bot_name: str, app_id: int) -> bool:
 
 async def get_2fa_code(bot_name: str) -> str:
     async with aiohttp.ClientSession() as session:
-        async with session.get(f"http://127.0.0.1:1242/Api/Bot/{bot_name}/TwoFactorAuthentication/Token", headers={"Authentication": ASF_PASSWORD}) as response: # type: ignore
+        async with session.get(f"http://127.0.0.1:1242/Api/Bot/{bot_name}/TwoFactorAuthentication/Token", headers=HEADERS) as response: # type: ignore
             if response.status != 200:
                 return f"Ошибка HTTP {response.status}"
             data = await response.json()
@@ -262,7 +304,7 @@ async def get_2fa_code(bot_name: str) -> str:
 
 async def get_confirmations(bot_name: str):
     async with aiohttp.ClientSession() as session:
-        async with session.get(f"http://127.0.0.1:1242/Api/Bot/{bot_name}/TwoFactorAuthentication/Confirmations", headers={"Authentication": ASF_PASSWORD}) as response: # type: ignore
+        async with session.get(f"http://127.0.0.1:1242/Api/Bot/{bot_name}/TwoFactorAuthentication/Confirmations", headers=HEADERS) as response: # type: ignore
             if response.status != 200:
                 return []
             data = await response.json()
@@ -276,7 +318,7 @@ async def get_confirmations(bot_name: str):
 async def get_inventory(bot_name: str, appid: int, contextid: int = 2):
     url = (f"http://127.0.0.1:1242/Api/Bot/{bot_name}/Inventory/{appid}/{contextid}")
     async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers={"Authentication": ASF_PASSWORD}) as response: # type: ignore
+        async with session.get(url, headers=HEADERS) as response: # type: ignore
             if response.status != 200:
                 return None
             data = await response.json()
@@ -288,7 +330,7 @@ async def get_inventory(bot_name: str, appid: int, contextid: int = 2):
                 return None
 
 async def render_inventory_page(callback: CallbackQuery, bot_name: str, inventory_type: str, appid: int, contextid: int, page: int):
-    await callback.message.edit_text("Загрузка inventory...") # type: ignore
+    await callback.message.edit_text("<b>Загрузка инвентаря...</b>") # type: ignore
     inventory = await get_inventory(bot_name, appid, contextid)
     if not inventory:
         await callback.message.edit_text("Не удалось загрузить inventory") # type: ignore
@@ -297,7 +339,7 @@ async def render_inventory_page(callback: CallbackQuery, bot_name: str, inventor
     assets = bot_inventory.get("Assets", [])
     descriptions = bot_inventory.get("Descriptions", [])
     if not assets:
-        await callback.message.edit_text("Инвентарь пуст", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data=f"inventory_{bot_name}")]])) # type: ignore
+        await callback.message.edit_text("<b>Инвентарь пуст</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data=f"inventory_{bot_name}")]])) # type: ignore
         return
     desc_map = {}
     for desc in descriptions:
@@ -337,17 +379,17 @@ async def render_inventory_page(callback: CallbackQuery, bot_name: str, inventor
         lines.append(f"{icon} {tradable}{marketable} {name} x{amount}")
     inv_name = ("CS2" if appid == 730 else "Steam")
     stats = (
-        f"📦 Items: {len(assets)}\n"
+        f"📦 Предметы: {len(assets)}\n"
         f"💰 Marketable: {marketable_count}\n"
         f"🔄 Tradable: {tradable_count}")
     if appid == 753:
         stats += (
-            f"\n🃏 Cards: {cards_count}"
-            f"\n😀 Emotes: {emotes_count}"
-            f"\n🖼 Backgrounds: {backgrounds_count}"
-            f"\n💎 Gems: {gems_count}")
+            f"\n🃏 Карточки: {cards_count}"
+            f"\n😀 Емоджи: {emotes_count}"
+            f"\n🖼 Фонов: {backgrounds_count}"
+            f"\n💎 Гемов: {gems_count}")
     text = (
-        f"📦 {inv_name} Inventory {bot_name}\n"
+        f"📦 {inv_name} инвентарь {bot_name}\n"
         f"📄 Страница {page + 1}/{total_pages}\n\n"
         f"{stats}\n\n"
         + "\n".join(lines))
@@ -364,7 +406,7 @@ async def render_inventory_page(callback: CallbackQuery, bot_name: str, inventor
 
 async def reload_bot(bot_name: str):
     try:
-        requests.post("http://127.0.0.1:1242/Api/Command", headers={"Authentication": ASF_PASSWORD}, json={"Command": f"!reload {bot_name}"})
+        requests.post("http://127.0.0.1:1242/Api/Command", headers=HEADERS, json={"Command": f"!reload {bot_name}"})
     except:
         pass
 
@@ -379,7 +421,7 @@ async def stop_twofa_task(message_id: int):
 
 async def redeem_key(bot_name: str, key: str):
     async with aiohttp.ClientSession() as session:
-        async with session.post("http://127.0.0.1:1242/Api/Command", headers={"Authentication": ASF_PASSWORD}, json={"Command": f"!redeem {bot_name} {key}"}) as response: # type: ignore
+        async with session.post("http://127.0.0.1:1242/Api/Command", headers=HEADERS, json={"Command": f"!redeem {bot_name} {key}"}) as response: # type: ignore
             if response.status != 200:
                 return False, f"HTTP_ERROR_{response.status}"
             data = await response.json()
@@ -404,8 +446,8 @@ async def auto_update_2fa(message, bot_name):
                     keyboard.append([InlineKeyboardButton(text="Подтверждения", callback_data=f"confirm_list_{bot_name}")])
                 keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"bot_{bot_name}")])
                 text = (
-                    f"🔐 {bot_name}\n\n"
-                    f"<code>{code}</code>")
+    f"🔐 <b>Steam Guard</b> аккаунта <b>{bot_name}</b>\n\n"
+    f"<b>Код:</b> <code>{code}</code>")
                 try:
                     await message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
                     last_code = code
@@ -415,7 +457,7 @@ async def auto_update_2fa(message, bot_name):
     except asyncio.CancelledError:
         pass
     except Exception as e:
-        print(f"2FA updater error: {e}")
+        print(f"Steam Guard updater error: {e}")
     finally:
         twofa_tasks.pop(message_id, None)
 
@@ -435,14 +477,13 @@ async def start_handler(message: Message):
 async def console_enter(callback: CallbackQuery):
     await callback.answer()
     console_users.add(callback.from_user.id)
-    await callback.message.edit_text("💻 Консоль ASF\n\nОтправь команду (без !)", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="console_exit")]])) # type: ignore
+    await callback.message.edit_text("<b>💻 Консоль ASF</b>\nОтправь команду (без !)", reply_markup=back_keyboard("console_exit")) # type: ignore
 
 @dp.callback_query(lambda c: c.data == "console_exit", AdminCallbackFilter())
 async def console_exit(callback: CallbackQuery):
     await callback.answer()
     console_users.discard(callback.from_user.id)
-    text = get_asf_status_text()
-    await callback.message.edit_text(text, reply_markup=main_keyboard()) # type: ignore
+    await callback.message.edit_text("<b>⚙️ Управление ASF</b>", reply_markup=asf_management_keyboard())
 
 @dp.callback_query(lambda c: c.data == "delete_msg", AdminCallbackFilter())
 async def delete_message(callback: CallbackQuery):
@@ -457,15 +498,18 @@ async def bots_handler(callback: CallbackQuery):
     await stop_twofa_task(callback.message.message_id) # type: ignore
     await callback.answer()
     try:
-        response = requests.get("http://127.0.0.1:1242/Api/Bot/ASF", headers={"Authentication": ASF_PASSWORD})
-        if response.status_code != 200:
-            await callback.message.edit_text("Ошибка API") # type: ignore
+        bots = asf_json("/Api/Bot/ASF")
+        if bots is None:
+            await callback.message.edit_text("Ошибка API")
             return
-        data = response.json()
-        if not data.get("Success"):
-            await callback.message.edit_text("ASF вернул ошибку") # type: ignore
+        not_loaded = [name for name, bot in bots.items() if not bot.get("BotName") or not bot.get("SteamID")]
+        if not_loaded:
+            await callback.message.edit_text(
+                "⏳ Аккаунты еще загружаются.\n\n"
+                f"Осталось загрузить: {len(not_loaded)} из {len(bots)}.\n"
+                "Подождите еще несколько секунд.",
+                reply_markup=back_keyboard())
             return
-        bots = data.get("Result", {})
         count = len(bots)
         summary = get_farm_summary(bots)
         text = (
@@ -483,9 +527,10 @@ async def bot_selected(callback: CallbackQuery):
         return
     bot_name = callback.data.replace("bot_", "")
     try:
-        response = asf_get("/Api/Bot/ASF")
-        data = response.json()
-        bots = data.get("Result", {})
+        bots = asf_json("/Api/Bot/ASF")
+        if bots is None:
+            await callback.message.edit_text("Ошибка API")
+            return
         bot = bots.get(bot_name)
         if not bot or not bot.get("BotName") or not bot.get("SteamID"):
             await callback.answer("Аккаунт ещё загружается. Попробуйте через несколько секунд.", show_alert=True)
@@ -494,15 +539,7 @@ async def bot_selected(callback: CallbackQuery):
             await callback.message.edit_text("Бот не найден") # type: ignore
             return
         text = format_bot_ui(bot)
-        keyboard = []
-        if bot.get("HasMobileAuthenticator"):
-            keyboard.append([InlineKeyboardButton(text="🔐 2FA", callback_data=f"2fa_{bot_name}")])
-        keyboard.append([InlineKeyboardButton(text="⌚ Накрутка часов", callback_data=f"games_{bot_name}")])
-        keyboard.append([InlineKeyboardButton(text="🔑 Активировать ключ", callback_data=f"redeem_bot_{bot_name}")])
-        keyboard.append([InlineKeyboardButton(text="📦 Инвентарь", callback_data=f"inventory_{bot_name}")])
-        keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="bots")])
-
-        await callback.message.edit_text(text, disable_web_page_preview=True, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)) # type: ignore
+        await callback.message.edit_text(text, disable_web_page_preview=True, reply_markup=bot_keyboard(bot_name, bot.get("HasMobileAuthenticator", False)))
     except Exception as e:
         await callback.message.edit_text(f"Ошибка: {e}") # type: ignore
 
@@ -543,19 +580,19 @@ async def refresh_handler(callback: CallbackQuery):
 async def restart_asf_confirm(callback: CallbackQuery):
     await callback.answer()
     await callback.message.edit_text( # type: ignore
-        "♻ Точно перезапустить ASF?\n\n"
+        "<b>♻ Точно перезапустить ASF?</b>\n\n"
         "Во время перезапуска IPC будет недоступен несколько секунд.",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="Да", callback_data="restart_asf")],
-                [InlineKeyboardButton(text="Нет", callback_data="back")]]))
+                [InlineKeyboardButton(text="Нет", callback_data="asf_management")]]))
 
 @dp.callback_query(lambda c: c.data == "restart_asf", AdminCallbackFilter())
 async def restart_asf(callback: CallbackQuery):
     await callback.answer()
     try:
         await callback.message.edit_text("♻ ASF перезапускается...") # type: ignore
-        response = requests.post("http://127.0.0.1:1242/Api/Command", headers={"Authentication": ASF_PASSWORD}, json={"Command": "!restart"})
+        response = requests.post("http://127.0.0.1:1242/Api/Command", headers=HEADERS, json={"Command": "!restart"})
         if response.status_code != 200:
             await callback.message.edit_text(f"Ошибка HTTP {response.status_code}", reply_markup=main_keyboard()) # type: ignore
             return
@@ -580,7 +617,7 @@ async def twofa_handler(callback: CallbackQuery):
         except:
             pass
     await callback.message.edit_text( # type: ignore
-        f"🔐 {bot_name}\n\nЗагрузка 2FA...",
+        f"🔐 <b>Steam Guard</b> аккаунта <b>{bot_name}</b>\n\n" "<b>⏳ Загрузка кода...</b>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data=f"bot_{bot_name}")]]))
     task = asyncio.create_task(auto_update_2fa(callback.message, bot_name))
     twofa_tasks[message_id] = task
@@ -590,7 +627,7 @@ async def confirm_trades(callback: CallbackQuery):
     await callback.answer()
     bot_name = callback.data.replace("confirm_", "") # type: ignore
     try:
-        response = requests.post(f"http://127.0.0.1:1242/Api/Bot/{bot_name}/TwoFactorAuthentication/Confirmations/Accept", headers={"Authentication": ASF_PASSWORD})
+        response = requests.post(f"http://127.0.0.1:1242/Api/Bot/{bot_name}/TwoFactorAuthentication/Confirmations/Accept", headers=HEADERS)
         if response.status_code != 200:
             await callback.answer("Ошибка HTTP", show_alert=True)
             return
@@ -604,15 +641,10 @@ async def plugins_handler(callback: CallbackQuery):
     await stop_twofa_task(callback.message.message_id) # type: ignore
     await callback.answer()
     try:
-        response = requests.get("http://127.0.0.1:1242/Api/Plugins", headers={"Authentication": ASF_PASSWORD})
-        if response.status_code != 200:
-            await callback.message.edit_text("Ошибка API") # type: ignore
+        plugins = asf_json("/Api/Plugins")
+        if plugins is None:
+            await callback.message.edit_text("Ошибка API")
             return
-        data = response.json()
-        if not data.get("Success"):
-            await callback.message.edit_text("ASF вернул ошибку") # type: ignore
-            return
-        plugins = data.get("Result", [])
         if not plugins:
             text = "Плагины не установлены"
         else:
@@ -621,7 +653,7 @@ async def plugins_handler(callback: CallbackQuery):
                 name = plugin.get("Name", "???")
                 version = plugin.get("Version", "???")
                 text += f"{name} ({version})\n"
-        await callback.message.edit_text(text.strip(), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="back")]])) # type: ignore
+        await callback.message.edit_text(text.strip(), reply_markup=back_keyboard("asf_management"))
     except Exception as e:
         await callback.message.edit_text(f"Ошибка: {e}") # type: ignore
 
@@ -657,7 +689,7 @@ async def confirm_all(callback: CallbackQuery):
         return
     bot_name = callback.data.replace("confirm_all_", "")
     try:
-        response = requests.post(f"http://127.0.0.1:1242/Api/Bot/{bot_name}/TwoFactorAuthentication/Confirmations/Accept", headers={"Authentication": ASF_PASSWORD})
+        response = requests.post(f"http://127.0.0.1:1242/Api/Bot/{bot_name}/TwoFactorAuthentication/Confirmations/Accept", headers=HEADERS)
         if response.status_code != 200:
             await callback.answer("Ошибка HTTP", show_alert=True)
             return
@@ -689,7 +721,7 @@ async def farm_game(callback: CallbackQuery):
     app_id = int(app_id)
     try:
         # получаем текущий конфиг
-        response = requests.get(f"http://127.0.0.1:1242/Api/Bot/{bot_name}", headers={"Authentication": ASF_PASSWORD})
+        response = requests.get(f"http://127.0.0.1:1242/Api/Bot/{bot_name}", headers=HEADERS)
         data = response.json()
         bot_data = data.get("Result", {}).get(bot_name, {})
         config = bot_data.get("BotConfig", {})
@@ -702,7 +734,7 @@ async def farm_game(callback: CallbackQuery):
             action = "Idle включен"
         config["GamesPlayedWhileIdle"] = idle_games
         save = requests.post(
-            f"http://127.0.0.1:1242/Api/Bot/{bot_name}", headers={"Authentication": ASF_PASSWORD}, json={"BotConfig": config})
+            f"http://127.0.0.1:1242/Api/Bot/{bot_name}", headers=HEADERS, json={"BotConfig": config})
         if save.status_code != 200:
             await callback.answer("Ошибка сохранения", show_alert=True)
             return
@@ -719,7 +751,7 @@ async def farm_game(callback: CallbackQuery):
 async def inventory_menu(callback: CallbackQuery):
     await callback.answer()
     bot_name = callback.data.replace("inventory_", "") # type: ignore
-    await callback.message.edit_text("Проверка inventory...") # type: ignore
+    await callback.message.edit_text("<b>Проверка инвентаря...</b>") # type: ignore
     cs2_inventory = await get_inventory(bot_name, 730, 2)
     steam_inventory = await get_inventory(bot_name, 753, 6)
     cs2_assets = []
@@ -733,7 +765,7 @@ async def inventory_menu(callback: CallbackQuery):
     except:
         pass
     if not cs2_assets and not steam_assets:
-        await callback.message.edit_text(f"📦 Инвентарь {bot_name} пуст", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data=f"bot_{bot_name}")]])) # type: ignore
+        await callback.message.edit_text(f"<b>📦 Инвентарь {bot_name} пуст</b>", reply_markup=back_keyboard(f"bot_{bot_name}")) # type: ignore
         return
     keyboard = []
     if cs2_assets:
@@ -743,14 +775,11 @@ async def inventory_menu(callback: CallbackQuery):
     keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"bot_{bot_name}")])
     await callback.message.edit_text( # type: ignore
         (
-            f"📦 Инвентарь {bot_name}\n\n"
+            f"<b>📦 Инвентарь {bot_name}</b>\n\n"
             "🔄 — можно трейдить\n"
             "💰 — можно продавать\n"
             "🔒 — нельзя продавать\n"
-            "❌ — нельзя трейдить"
-        ),
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-    )
+            "❌ — нельзя трейдить"), reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("inv_cs2_"), AdminCallbackFilter())
 async def cs2_inventory(callback: CallbackQuery):
@@ -784,7 +813,7 @@ async def redeem_keys_menu(callback: CallbackQuery):
         "Можно отправить сразу несколько ключей.\n\n"
         "Пример:\n"
         "<code>AAAAA-BBBBB-CCCCC\nDDDDD-EEEEE-FFFFF</code>",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="back")]]))
+        reply_markup=back_keyboard("bots"))
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("redeem_bot_"), AdminCallbackFilter())
 async def redeem_bot_menu(callback: CallbackQuery):
@@ -796,7 +825,7 @@ async def redeem_bot_menu(callback: CallbackQuery):
         f"Отправьте ключ Steam для активации на аккаунте:\n"
         f"<code>{bot_name}</code>\n\n"
         f"Можно отправить сразу несколько ключей.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data=f"bot_{bot_name}")]]))
+        reply_markup=back_keyboard(f"bot_{bot_name}"))
 
 @dp.message(AdminFilter())
 async def text_router(message: Message):
@@ -808,7 +837,7 @@ async def text_router(message: Message):
         except:
             pass
         try:
-            response = requests.post("http://127.0.0.1:1242/Api/Command", headers={"Authentication": ASF_PASSWORD}, json={"Command": f"!{command}"})
+            response = requests.post("http://127.0.0.1:1242/Api/Command", headers=HEADERS, json={"Command": f"!{command}"})
             if response.status_code != 200:
                 text = f"Ошибка HTTP {response.status_code}"
             else:
@@ -831,7 +860,7 @@ async def text_router(message: Message):
         menu_message = bot_redeem_messages.pop(message.from_user.id, None) # type: ignore
         if menu_message:
             try:
-                response = requests.get("http://127.0.0.1:1242/Api/Bot/ASF",headers={"Authentication": ASF_PASSWORD})
+                response = requests.get("http://127.0.0.1:1242/Api/Bot/ASF",headers=HEADERS)
                 data = response.json()
                 bot_data = data.get("Result", {}).get(bot_name)
                 if bot_data:
@@ -840,7 +869,7 @@ async def text_router(message: Message):
                         disable_web_page_preview=True,
                         reply_markup=InlineKeyboardMarkup(
                             inline_keyboard=[
-                                [InlineKeyboardButton(text="🔐 2FA", callback_data=f"2fa_{bot_name}")]
+                                [InlineKeyboardButton(text="🔐 Steam Guard", callback_data=f"2fa_{bot_name}")]
                                 if bot_data.get("HasMobileAuthenticator") else [],
                                 [InlineKeyboardButton(text="⌚ Накрутка часов", callback_data=f"games_{bot_name}")],
                                 [InlineKeyboardButton(text="🔑 Активировать ключ", callback_data=f"redeem_bot_{bot_name}")],
@@ -987,6 +1016,11 @@ async def text_router(message: Message):
         except Exception as e:
             await checking.edit_text(f"Ошибка: {e}")
         return
+
+@dp.callback_query(lambda c: c.data == "asf_management", AdminCallbackFilter())
+async def asf_management(callback: CallbackQuery):
+    await callback.answer()
+    await callback.message.edit_text("<b>⚙️ Управление ASF</b>", reply_markup=asf_management_keyboard())
 
 async def main():
     await dp.start_polling(bot)
